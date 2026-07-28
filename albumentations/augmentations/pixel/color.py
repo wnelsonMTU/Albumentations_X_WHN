@@ -36,6 +36,7 @@ from .color_lighting import (
     PlasmaShadow,
     Vignetting,
 )
+from .random_sigmoid_remap import RandomSigmoidRemap
 
 __all__ = [
     "CLAHE",
@@ -62,6 +63,7 @@ __all__ = [
     "ToRGB",
     "ToSepia",
     "Vignetting",
+    "RandomSigmoidRemap",
 ]
 
 _obj: object | None = None
