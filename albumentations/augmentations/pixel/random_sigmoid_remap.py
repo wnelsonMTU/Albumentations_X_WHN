@@ -25,19 +25,73 @@ _CURVE_X = np.linspace(0.0, 1.0, _CURVE_BINS, dtype=np.float32)
 _UINT16_X = np.linspace(0.0, 1.0, 1 << 16, dtype=np.float32)
 
 # Parameters ported from the MATLAB development script.
+_SMOOTHING_FACTOR = 10
+_C_D_SHAPE_FACTOR = 1.2
+_B_SHAPE_FACTOR = 1
 _B_RANGE = (0.1, 10.0)
-_C_MEAN = 0.5
-_C_STD = 0.4
-_C_RANGE = (0.1, 0.9)
-_D_MEAN = 0.5
-_D_STD = 0.4
-_D_RANGE = (0.1, 0.9)
+_C_RANGE = (0.2, 0.8)
+_D_RANGE = (0.4, 0.6)
+
+def _matlab_movmean_shrink(
+    values: np.ndarray,
+    window_size: int,
+) -> np.ndarray:
+    """Reproduce movmean(values, k, 'Endpoints', 'shrink') for a 1-D array.
+
+    MATLAB centers odd windows on the current element.
+
+    For an even window size, MATLAB centers the window on the current and
+    previous elements. Therefore, an even window contains one more sample
+    before the current element than after it.
+
+    Endpoint windows are shortened to contain only samples that exist.
+
+    A cumulative-sum implementation is used so runtime and memory usage are
+    linear in the LUT length.
+    """
+
+    if values.ndim != 1:
+        raise ValueError("values must be a one-dimensional array.")
+
+    if window_size < 1:
+        raise ValueError("window_size must be at least 1.")
+
+    num_values = values.size
+
+    if window_size == 1 or num_values == 0:
+        return values.copy()
+
+    if window_size % 2 == 0:
+        num_before = window_size // 2
+        num_after = window_size // 2 - 1
+    else:
+        num_before = window_size // 2
+        num_after = window_size // 2
+
+    indices = np.arange(num_values, dtype=np.int64)
+
+    start_indices = np.maximum(indices - num_before, 0)
+    stop_indices = np.minimum(indices + num_after + 1, num_values)
+
+    cumulative_sum = np.empty(num_values + 1, dtype=np.float64)
+    cumulative_sum[0] = 0.0
+    np.cumsum(values, dtype=np.float64, out=cumulative_sum[1:])
+
+    moving_sums = (
+        cumulative_sum[stop_indices]
+        - cumulative_sum[start_indices]
+    )
+
+    sample_counts = stop_indices - start_indices
+
+    return moving_sums / sample_counts
 
 
 def _generate_sigmoid_lut(
     b: float,
     c: float,
     d: float,
+    doFlip: bool,
     num_points: int = _CURVE_BINS,
 ) -> np.ndarray:
     """Generate the normalized pseudo-sigmoid LUT.
@@ -101,7 +155,14 @@ def _generate_sigmoid_lut(
     z_windowed = z_flipped * window
     z_windowed[flip_mask] = 1.0 - z_windowed[flip_mask]
 
-    return np.ascontiguousarray(z_windowed, dtype=np.float32)
+    z_smoothed = _matlab_movmean_shrink(z_windowed,int(round(num_points/_SMOOTHING_FACTOR)))
+
+    z_final = (z_smoothed - z_smoothed.min())/np.ptp(z_smoothed)
+
+    if doFlip:
+        z_final = np.flip(z_final)
+
+    return np.ascontiguousarray(z_final, dtype=np.float32)
 
 
 def _validate_single_grayscale_image(image: np.ndarray) -> None:
@@ -109,10 +170,10 @@ def _validate_single_grayscale_image(image: np.ndarray) -> None:
         return
     if image.ndim == 3 and image.shape[-1] == 1:
         return
-    raise TypeError(
-        "RandomSigmoidRemap expects a grayscale image with shape (H, W) "
-        "or (H, W, 1).",
-    )
+    #raise TypeError(
+    #    "RandomSigmoidRemap expects a grayscale image with shape (H, W) "
+    #    "or (H, W, 1).",
+    #)
 
 
 def _validate_grayscale_batch(images: np.ndarray) -> None:
@@ -210,22 +271,12 @@ class RandomSigmoidRemap(ImageOnlyTransform):
         super().__init__(p=p)
 
     def get_params(self) -> dict[str, float]:
-        b = float(self.random_generator.uniform(*_B_RANGE))
-        c = float(
-            np.clip(
-                self.random_generator.normal(_C_MEAN, _C_STD),
-                *_C_RANGE,
-            ),
-        )
-        d = float(
-            np.clip(
-                self.random_generator.normal(_D_MEAN, _D_STD),
-                *_D_RANGE,
-            ),
-        )
+        b = float(_B_RANGE[0] + (_B_RANGE[1] - _B_RANGE[0])*float(self.random_generator.beta(_B_SHAPE_FACTOR, _B_SHAPE_FACTOR)))
+        c = float(_C_RANGE[0] + (_C_RANGE[1] - _C_RANGE[0])*float(self.random_generator.beta(_C_D_SHAPE_FACTOR, _C_D_SHAPE_FACTOR)))
+        d = float(_D_RANGE[0] + (_D_RANGE[1] - _D_RANGE[0])*float(self.random_generator.beta(_C_D_SHAPE_FACTOR, _C_D_SHAPE_FACTOR)))
+        doFlip = True if self.random_generator.uniform(0,1) >= 0.5 else False
 
-        self.applied_config = {"b": b, "c": c, "d": d}
-        return {"b": b, "c": c, "d": d}
+        return {"b": b, "c": c, "d": d, "doFlip": doFlip}
 
     def apply(
         self,
@@ -233,10 +284,11 @@ class RandomSigmoidRemap(ImageOnlyTransform):
         b: float,
         c: float,
         d: float,
+        doFlip: bool,
         **params: Any,
     ) -> ImageType:
         _validate_single_grayscale_image(img)
-        lut = _generate_sigmoid_lut(b=b, c=c, d=d)
+        lut = _generate_sigmoid_lut(b=b, c=c, d=d, doFlip=doFlip)
         return _apply_normalized_lut(img, lut)
 
     def apply_to_images(
@@ -245,10 +297,11 @@ class RandomSigmoidRemap(ImageOnlyTransform):
         b: float,
         c: float,
         d: float,
+        doFlip: bool,
         **params: Any,
     ) -> ImageType:
         _validate_grayscale_batch(images)
-        lut = _generate_sigmoid_lut(b=b, c=c, d=d)
+        lut = _generate_sigmoid_lut(b=b, c=c, d=d, doFlip=doFlip)
 
         if images.dtype == np.uint8:
             return _normalized_to_uint8_lut(lut)[images]
