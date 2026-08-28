@@ -25,10 +25,12 @@ from .special import (
     RandomCropFromBorders,
     RandomCropNearBBox,
 )
+from .bbox_safe_random_zoom import BBoxSafeRandomZoom
 
 __all__ = [
     "AtLeastOneBBoxRandomCrop",
     "BBoxSafeRandomCrop",
+    "BBoxSafeRandomZoom",
     "CenterCrop",
     "Crop",
     "CropAndPad",
