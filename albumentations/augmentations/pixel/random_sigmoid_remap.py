@@ -91,7 +91,6 @@ def _generate_sigmoid_lut(
     b: float,
     c: float,
     d: float,
-    doFlip: bool,
     num_points: int = _CURVE_BINS,
 ) -> np.ndarray:
     """Generate the normalized pseudo-sigmoid LUT.
@@ -158,9 +157,6 @@ def _generate_sigmoid_lut(
     z_smoothed = _matlab_movmean_shrink(z_windowed,int(round(num_points/_SMOOTHING_FACTOR)))
 
     z_final = (z_smoothed - z_smoothed.min())/np.ptp(z_smoothed)
-
-    if doFlip:
-        z_final = np.flip(z_final)
 
     return np.ascontiguousarray(z_final, dtype=np.float32)
 
@@ -274,9 +270,8 @@ class RandomSigmoidRemap(ImageOnlyTransform):
         b = float(_B_RANGE[0] + (_B_RANGE[1] - _B_RANGE[0])*float(self.random_generator.beta(_B_SHAPE_FACTOR, _B_SHAPE_FACTOR)))
         c = float(_C_RANGE[0] + (_C_RANGE[1] - _C_RANGE[0])*float(self.random_generator.beta(_C_D_SHAPE_FACTOR, _C_D_SHAPE_FACTOR)))
         d = float(_D_RANGE[0] + (_D_RANGE[1] - _D_RANGE[0])*float(self.random_generator.beta(_C_D_SHAPE_FACTOR, _C_D_SHAPE_FACTOR)))
-        doFlip = True if self.random_generator.uniform(0,1) >= 0.5 else False
 
-        return {"b": b, "c": c, "d": d, "doFlip": doFlip}
+        return {"b": b, "c": c, "d": d}
 
     def apply(
         self,
@@ -284,11 +279,10 @@ class RandomSigmoidRemap(ImageOnlyTransform):
         b: float,
         c: float,
         d: float,
-        doFlip: bool,
         **params: Any,
     ) -> ImageType:
         _validate_single_grayscale_image(img)
-        lut = _generate_sigmoid_lut(b=b, c=c, d=d, doFlip=doFlip)
+        lut = _generate_sigmoid_lut(b=b, c=c, d=d)
         return _apply_normalized_lut(img, lut)
 
     def apply_to_images(
@@ -297,11 +291,10 @@ class RandomSigmoidRemap(ImageOnlyTransform):
         b: float,
         c: float,
         d: float,
-        doFlip: bool,
         **params: Any,
     ) -> ImageType:
         _validate_grayscale_batch(images)
-        lut = _generate_sigmoid_lut(b=b, c=c, d=d, doFlip=doFlip)
+        lut = _generate_sigmoid_lut(b=b, c=c, d=d)
 
         if images.dtype == np.uint8:
             return _normalized_to_uint8_lut(lut)[images]
